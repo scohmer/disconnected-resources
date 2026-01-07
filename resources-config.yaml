@@ -94,3 +94,13 @@ output:
 security:
   generate_checksums: true
   checksum_algorithm: "sha256"
+
+notifications:
+  email:
+    enabled: true
+    recipients:
+      - "user1@example.com"
+      - "user2@example.com"
+    send_on_success: true
+    send_on_failure: true
+    include_summary: true

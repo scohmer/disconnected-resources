@@ -232,9 +232,230 @@ jobs:
           echo "3. Transfer to disconnected environment" >> $GITHUB_STEP_SUMMARY
           echo "4. Extract and follow README.md in bundle" >> $GITHUB_STEP_SUMMARY
 
+      - name: Prepare email notification data
+        id: email-data
+        if: always()
+        run: |
+          # Extract email configuration
+          EMAIL_ENABLED=$(jq -r '.notifications.email.enabled // false' config.json 2>/dev/null || echo "false")
+          echo "email_enabled=$EMAIL_ENABLED" >> $GITHUB_OUTPUT
+
+          if [ "$EMAIL_ENABLED" = "true" ]; then
+            RECIPIENTS=$(jq -r '.notifications.email.recipients[]' config.json 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+            echo "recipients=$RECIPIENTS" >> $GITHUB_OUTPUT
+
+            SEND_ON_SUCCESS=$(jq -r '.notifications.email.send_on_success // true' config.json 2>/dev/null || echo "true")
+            echo "send_on_success=$SEND_ON_SUCCESS" >> $GITHUB_OUTPUT
+
+            SEND_ON_FAILURE=$(jq -r '.notifications.email.send_on_failure // true' config.json 2>/dev/null || echo "true")
+            echo "send_on_failure=$SEND_ON_FAILURE" >> $GITHUB_OUTPUT
+          fi
+
+          # Store job status
+          echo "job_status=${{ job.status }}" >> $GITHUB_OUTPUT
+
+      - name: Prepare email content
+        id: email-content
+        if: always() && steps.email-data.outputs.email_enabled == 'true'
+        run: |
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          ENV_NAME=$(jq -r '.metadata.environment_name // "Unknown"' config.json 2>/dev/null || echo "Unknown")
+          ARTIFACT_NAME="${{ steps.artifact-name.outputs.name }}"
+
+          if [ "${{ job.status }}" = "success" ]; then
+            SUBJECT="✅ Disconnected Resources Bundle Ready - $ENV_NAME"
+            STATUS_MESSAGE="Your disconnected resources bundle has been generated successfully!"
+
+            # Collect statistics
+            NPM_COUNT=$(find output/npm -name "*.tgz" 2>/dev/null | wc -l || echo "0")
+            PYPI_COUNT=$(find output/pypi/packages -type f 2>/dev/null | wc -l || echo "0")
+            DEB_COUNT=$(find output/debian -name "*.deb" 2>/dev/null | wc -l || echo "0")
+            RPM_COUNT=$(find output/rpm -name "*.rpm" 2>/dev/null | wc -l || echo "0")
+            CONTAINER_COUNT=$(find output/containers/images -name "*.tar.gz" 2>/dev/null | wc -l || echo "0")
+            VSCODE_COUNT=$(find output/vscode/extensions -name "*.vsix" 2>/dev/null | wc -l || echo "0")
+
+            BUNDLE_FILE=$(ls output/*.tar.* 2>/dev/null | head -1)
+            if [ -n "$BUNDLE_FILE" ]; then
+              BUNDLE_SIZE=$(du -sh "$BUNDLE_FILE" 2>/dev/null | cut -f1 || echo "Unknown")
+            else
+              BUNDLE_SIZE="Unknown"
+            fi
+
+            # Build email body
+            cat > email_body.html << EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .header { background-color: #28a745; color: white; padding: 20px; text-align: center; }
+              .content { padding: 20px; }
+              .info-box { background-color: #f8f9fa; border-left: 4px solid #28a745; padding: 15px; margin: 15px 0; }
+              .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 20px 0; }
+              .stat-item { background-color: #e9ecef; padding: 10px; border-radius: 5px; }
+              .button { background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0; }
+              .footer { background-color: #f8f9fa; padding: 15px; text-align: center; font-size: 12px; color: #666; }
+              table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th { background-color: #007bff; color: white; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>✅ Resources Bundle Ready</h1>
+            </div>
+            <div class="content">
+              <p>Hello,</p>
+              <p><strong>$STATUS_MESSAGE</strong></p>
+
+              <div class="info-box">
+                <h3>Bundle Information</h3>
+                <ul>
+                  <li><strong>Environment:</strong> $ENV_NAME</li>
+                  <li><strong>Bundle Name:</strong> $ARTIFACT_NAME</li>
+                  <li><strong>Generated:</strong> $TIMESTAMP</li>
+                  <li><strong>Total Size:</strong> $BUNDLE_SIZE</li>
+                  <li><strong>Triggered By:</strong> ${{ github.actor }}</li>
+                </ul>
+              </div>
+
+              <h3>📦 Components Collected</h3>
+              <table>
+                <tr>
+                  <th>Component</th>
+                  <th>Count</th>
+                </tr>
+                <tr><td>NPM Packages</td><td>$NPM_COUNT</td></tr>
+                <tr><td>PyPI Packages</td><td>$PYPI_COUNT</td></tr>
+                <tr><td>Debian Packages</td><td>$DEB_COUNT</td></tr>
+                <tr><td>RPM Packages</td><td>$RPM_COUNT</td></tr>
+                <tr><td>Container Images</td><td>$CONTAINER_COUNT</td></tr>
+                <tr><td>VSCode Extensions</td><td>$VSCODE_COUNT</td></tr>
+              </table>
+
+              <h3>📥 Download Instructions</h3>
+              <ol>
+                <li>Visit the workflow run page</li>
+                <li>Scroll to the <strong>Artifacts</strong> section at the bottom</li>
+                <li>Click on <strong>$ARTIFACT_NAME</strong> to download</li>
+                <li>Verify checksums after download</li>
+                <li>Transfer to your disconnected environment</li>
+              </ol>
+
+              <a href="$WORKFLOW_URL" class="button">View Workflow Run</a>
+
+              <div class="info-box">
+                <h4>⚠️ Important Notes</h4>
+                <ul>
+                  <li>Artifacts are retained for 90 days</li>
+                  <li>Always verify checksums after download</li>
+                  <li>See the bundle README.md for installation instructions</li>
+                </ul>
+              </div>
+            </div>
+            <div class="footer">
+              <p>This is an automated notification from the Disconnected Resources Pipeline</p>
+              <p>Repository: ${{ github.repository }}</p>
+            </div>
+          </body>
+          </html>
+          EOF
+          else
+            SUBJECT="❌ Disconnected Resources Bundle Failed - $ENV_NAME"
+            STATUS_MESSAGE="The bundle generation has failed. Please check the workflow logs."
+
+            # Build failure email body
+            cat > email_body.html << EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .header { background-color: #dc3545; color: white; padding: 20px; text-align: center; }
+              .content { padding: 20px; }
+              .error-box { background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0; color: #721c24; }
+              .button { background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0; }
+              .footer { background-color: #f8f9fa; padding: 15px; text-align: center; font-size: 12px; color: #666; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>❌ Bundle Generation Failed</h1>
+            </div>
+            <div class="content">
+              <p>Hello,</p>
+
+              <div class="error-box">
+                <h3>Error Details</h3>
+                <p><strong>$STATUS_MESSAGE</strong></p>
+                <ul>
+                  <li><strong>Environment:</strong> $ENV_NAME</li>
+                  <li><strong>Timestamp:</strong> $TIMESTAMP</li>
+                  <li><strong>Triggered By:</strong> ${{ github.actor }}</li>
+                </ul>
+              </div>
+
+              <h3>🔍 Next Steps</h3>
+              <ol>
+                <li>Review the workflow logs for detailed error messages</li>
+                <li>Check if all package names and versions are correct</li>
+                <li>Verify that dependencies are available</li>
+                <li>Check for rate limiting or authentication issues</li>
+                <li>Re-run the workflow after fixing issues</li>
+              </ol>
+
+              <a href="$WORKFLOW_URL" class="button">View Workflow Logs</a>
+            </div>
+            <div class="footer">
+              <p>This is an automated notification from the Disconnected Resources Pipeline</p>
+              <p>Repository: ${{ github.repository }}</p>
+            </div>
+          </body>
+          </html>
+          EOF
+          fi
+
+          # Save subject
+          echo "$SUBJECT" > email_subject.txt
+          echo "Email notification prepared"
+
+      - name: Send success email notification
+        if: success() && steps.email-data.outputs.email_enabled == 'true' && steps.email-data.outputs.send_on_success == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: file://email_subject.txt
+          to: ${{ steps.email-data.outputs.recipients }}
+          from: ${{ secrets.SMTP_FROM_EMAIL }}
+          html_body: file://email_body.html
+          ignore_cert: false
+          convert_markdown: false
+          priority: normal
+
+      - name: Send failure email notification
+        if: failure() && steps.email-data.outputs.email_enabled == 'true' && steps.email-data.outputs.send_on_failure == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: file://email_subject.txt
+          to: ${{ steps.email-data.outputs.recipients }}
+          from: ${{ secrets.SMTP_FROM_EMAIL }}
+          html_body: file://email_body.html
+          ignore_cert: false
+          convert_markdown: false
+          priority: high
+
       - name: Cleanup
         if: always()
         run: |
           # Clean up intermediate files to save space
           rm -rf output/bundle-staging
+          rm -f email_body.html email_subject.txt
           docker system prune -af || true

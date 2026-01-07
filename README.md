@@ -24,6 +24,7 @@ This solution automates the monthly collection of resources from various package
   - VSCode extensions
 - **Configurable**: Simple YAML configuration file
 - **Dependency Resolution**: Automatically includes package dependencies
+- **Email Notifications**: Automatic email alerts when bundles are ready or if generation fails
 - **Secure**: Generates checksums for integrity verification
 - **Compressed**: Creates optimized tarballs with optional splitting
 - **Well-Documented**: Each component includes detailed installation guides
@@ -259,6 +260,37 @@ cat README.md
 # Follow instructions
 ```
 
+## Email Notifications
+
+The pipeline can automatically send email notifications when bundles are ready or if generation fails.
+
+### Setup Email Notifications
+
+1. **Enable in configuration** (`resources-config.yaml`):
+   ```yaml
+   notifications:
+     email:
+       enabled: true
+       recipients:
+         - "user1@example.com"
+         - "user2@example.com"
+       send_on_success: true
+       send_on_failure: true
+   ```
+
+2. **Configure SMTP secrets** in GitHub (Settings → Secrets → Actions):
+   - `SMTP_SERVER` - Your SMTP server (e.g., `smtp.gmail.com`)
+   - `SMTP_PORT` - SMTP port (e.g., `587`)
+   - `SMTP_USERNAME` - Your email username
+   - `SMTP_PASSWORD` - Your email password or app password
+   - `SMTP_FROM_EMAIL` - Sender email address
+
+3. **Email content includes**:
+   - ✅ Success: Bundle statistics, download link, size information
+   - ❌ Failure: Error details, troubleshooting steps, workflow logs link
+
+For detailed setup instructions, see **[EMAIL_SETUP.md](EMAIL_SETUP.md)**.
+
 ## Advanced Features
 
 ### Private Packages
@@ -412,6 +444,7 @@ Improvements are welcome! To contribute:
 
 - **README.md** (this file): Overview and quick start
 - **SETUP.md**: Detailed setup and configuration guide
+- **EMAIL_SETUP.md**: Email notification configuration guide
 - **Component READMEs**: Installation guides in each bundle directory
 
 ## Support
