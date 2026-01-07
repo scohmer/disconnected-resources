@@ -1,0 +1,96 @@
+metadata:
+  environment_name: "production-airgap"
+  description: "Monthly resource bundle for disconnected environment"
+  contact: "your-team@example.com"
+
+npm:
+  enabled: true
+  include_dependencies: true
+  packages:
+    - name: "express"
+      version: "latest"
+    - name: "react"
+      version: "18.2.0"
+    - name: "axios"
+      version: "latest"
+    - name: "lodash"
+      version: "4.17.21"
+
+pypi:
+  enabled: true
+  include_dependencies: true
+  python_versions:
+    - "3.9"
+    - "3.10"
+    - "3.11"
+  platforms:
+    - "manylinux2014_x86_64"
+    - "linux_x86_64"
+  packages:
+    - name: "requests"
+      version: "latest"
+    - name: "flask"
+      version: "2.3.0"
+    - name: "pandas"
+      version: "latest"
+    - name: "numpy"
+      version: "latest"
+
+debian:
+  enabled: true
+  distribution: "ubuntu"
+  release: "22.04"
+  architectures:
+    - "amd64"
+  include_dependencies: true
+  packages:
+    - "curl"
+    - "git"
+    - "vim"
+    - "wget"
+    - "build-essential"
+
+rpm:
+  enabled: true
+  distribution: "rhel"
+  release: "9"
+  architectures:
+    - "x86_64"
+  include_dependencies: true
+  packages:
+    - "curl"
+    - "git"
+    - "vim"
+    - "wget"
+    - "gcc"
+
+containers:
+  enabled: true
+  export_format: "docker-archive"
+  images:
+    - image: "docker.io/library/nginx"
+      tag: "1.25-alpine"
+    - image: "docker.io/library/python"
+      tag: "3.11-slim"
+    - image: "docker.io/library/node"
+      tag: "20-alpine"
+    - image: "docker.io/library/redis"
+      tag: "7-alpine"
+
+vscode:
+  enabled: true
+  extensions:
+    - "ms-python.python"
+    - "golang.go"
+    - "dbaeumer.vscode-eslint"
+    - "ms-vscode.cpptools"
+    - "redhat.vscode-yaml"
+
+output:
+  tarball_name: "resources-bundle"
+  compression: "gzip"
+  split_size: "0"
+
+security:
+  generate_checksums: true
+  checksum_algorithm: "sha256"

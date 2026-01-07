@@ -1,0 +1,240 @@
+name: Generate Disconnected Resources Bundle
+
+on:
+  # Run monthly on the 1st at 2 AM UTC
+  schedule:
+    - cron: '0 2 1 * *'
+
+  # Run when resources-config.yaml is modified
+  push:
+    paths:
+      - 'resources-config.yaml'
+      - '.github/workflows/generate-resources.yml'
+
+  # Allow manual trigger with optional config file input
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: 'Configuration file to use'
+        required: false
+        default: 'resources-config.yaml'
+      custom_name:
+        description: 'Custom bundle name suffix (optional)'
+        required: false
+        default: ''
+
+env:
+  CONFIG_FILE: ${{ github.event.inputs.config_file || 'resources-config.yaml' }}
+
+jobs:
+  generate-bundle:
+    name: Generate Resources Bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            jq \
+            curl \
+            wget \
+            python3-pip \
+            dpkg-dev \
+            createrepo-c \
+            docker.io
+
+      - name: Install Python dependencies
+        run: |
+          pip install pyyaml
+
+      - name: Make scripts executable
+        run: |
+          chmod +x scripts/*.sh
+          chmod +x scripts/*.py
+
+      - name: Validate configuration
+        run: |
+          python3 scripts/parse_config.py "$CONFIG_FILE" --validate-only
+
+      - name: Parse configuration to JSON
+        run: |
+          python3 scripts/parse_config.py "$CONFIG_FILE" --format json --output config.json
+          cat config.json
+
+      - name: Display configuration summary
+        run: |
+          echo "=== Configuration Summary ==="
+          echo "Environment: $(jq -r '.metadata.environment_name' config.json)"
+          echo "Description: $(jq -r '.metadata.description' config.json)"
+          echo ""
+          echo "Enabled sources:"
+          jq -r 'to_entries | map(select(.value.enabled == true)) | .[].key' config.json | sed 's/^/  - /'
+
+      - name: Collect NPM packages
+        if: success()
+        run: |
+          echo "=== Collecting NPM packages ==="
+          bash scripts/collect_npm.sh config.json output || echo "NPM collection had warnings"
+
+      - name: Collect PyPI packages
+        if: success()
+        run: |
+          echo "=== Collecting PyPI packages ==="
+          bash scripts/collect_pypi.sh config.json output || echo "PyPI collection had warnings"
+
+      - name: Collect Debian packages
+        if: success()
+        run: |
+          echo "=== Collecting Debian packages ==="
+          bash scripts/collect_debian.sh config.json output || echo "Debian collection had warnings"
+
+      # RPM collection in container to avoid conflicts with Ubuntu
+      - name: Collect RPM packages
+        if: success()
+        run: |
+          echo "=== Collecting RPM packages ==="
+          RPM_ENABLED=$(jq -r '.rpm.enabled // false' config.json)
+          if [ "$RPM_ENABLED" = "true" ]; then
+            docker run --rm \
+              -v "$(pwd)":/workspace \
+              -w /workspace \
+              rockylinux:9 \
+              bash -c "
+                dnf install -y jq createrepo_c && \
+                bash scripts/collect_rpm.sh config.json output
+              " || echo "RPM collection had warnings"
+          else
+            echo "RPM collection is disabled"
+          fi
+
+      - name: Collect container images
+        if: success()
+        run: |
+          echo "=== Collecting container images ==="
+          bash scripts/collect_containers.sh config.json output || echo "Container collection had warnings"
+
+      - name: Collect VSCode extensions
+        if: success()
+        run: |
+          echo "=== Collecting VSCode extensions ==="
+          bash scripts/collect_vscode.sh config.json output || echo "VSCode collection had warnings"
+
+      - name: Create bundle
+        if: success()
+        run: |
+          echo "=== Creating bundle ==="
+          bash scripts/create_bundle.sh config.json output
+
+      - name: List generated files
+        if: success()
+        run: |
+          echo "=== Generated files ==="
+          ls -lh output/*.tar.* output/*.sha* output/*.md5 2>/dev/null || true
+          echo ""
+          echo "=== Bundle contents ==="
+          du -sh output/bundle-staging/* 2>/dev/null || true
+
+      - name: Generate artifact name
+        id: artifact-name
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          CUSTOM="${{ github.event.inputs.custom_name }}"
+          if [ -n "$CUSTOM" ]; then
+            ARTIFACT_NAME="resources-bundle-${CUSTOM}-${TIMESTAMP}"
+          else
+            ARTIFACT_NAME="resources-bundle-${TIMESTAMP}"
+          fi
+          echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "Artifact name: $ARTIFACT_NAME"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: |
+            output/*.tar.*
+            output/*.sha256
+            output/*.sha512
+            output/*.md5
+            output/*-reassemble.sh
+          retention-days: 90
+          compression-level: 0
+
+      - name: Generate summary
+        if: success()
+        run: |
+          echo "## Bundle Generation Complete :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Bundle Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: $(jq -r '.metadata.environment_name' config.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "- **Config File**: $CONFIG_FILE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Components Collected" >> $GITHUB_STEP_SUMMARY
+          if [ -d "output/npm" ]; then
+            NPM_COUNT=$(find output/npm -name "*.tgz" 2>/dev/null | wc -l || echo "0")
+            echo "- **NPM**: $NPM_COUNT packages ($(du -sh output/npm 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d "output/pypi" ]; then
+            PYPI_COUNT=$(find output/pypi/packages -type f 2>/dev/null | wc -l || echo "0")
+            echo "- **PyPI**: $PYPI_COUNT packages ($(du -sh output/pypi 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d "output/debian" ]; then
+            DEB_COUNT=$(find output/debian -name "*.deb" 2>/dev/null | wc -l || echo "0")
+            echo "- **Debian**: $DEB_COUNT packages ($(du -sh output/debian 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d "output/rpm" ]; then
+            RPM_COUNT=$(find output/rpm -name "*.rpm" 2>/dev/null | wc -l || echo "0")
+            echo "- **RPM**: $RPM_COUNT packages ($(du -sh output/rpm 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d "output/containers" ]; then
+            CONTAINER_COUNT=$(find output/containers/images -name "*.tar.gz" 2>/dev/null | wc -l || echo "0")
+            echo "- **Containers**: $CONTAINER_COUNT images ($(du -sh output/containers 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -d "output/vscode" ]; then
+            VSCODE_COUNT=$(find output/vscode/extensions -name "*.vsix" 2>/dev/null | wc -l || echo "0")
+            echo "- **VSCode**: $VSCODE_COUNT extensions ($(du -sh output/vscode 2>/dev/null | cut -f1 || echo '0'))" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Bundle Files" >> $GITHUB_STEP_SUMMARY
+          for file in output/*.tar.*; do
+            if [ -f "$file" ]; then
+              SIZE=$(du -sh "$file" | cut -f1)
+              BASENAME=$(basename "$file")
+              echo "- **$BASENAME**: $SIZE" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download" >> $GITHUB_STEP_SUMMARY
+          echo "The bundle is available as an artifact in this workflow run." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the artifact from this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify checksums after download" >> $GITHUB_STEP_SUMMARY
+          echo "3. Transfer to disconnected environment" >> $GITHUB_STEP_SUMMARY
+          echo "4. Extract and follow README.md in bundle" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Clean up intermediate files to save space
+          rm -rf output/bundle-staging
+          docker system prune -af || true
